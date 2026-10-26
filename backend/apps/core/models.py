@@ -14,8 +14,6 @@ class Label(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
-#employees of label
-
 class UserRole(models.TextChoices):
     LABEL_OWNER = 'label_owner', 'Label Owner'
     LABEL_MEMBER = 'label_member', 'Member of Label'
@@ -48,8 +46,6 @@ class Release(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-
-# format release
 
 class FormatType(models.TextChoices):
     LP = "lp", "LP"
@@ -89,8 +85,6 @@ class Track(models.Model):
     duration = models.DurationField(null=True, blank=True)
 
 
-# contact
-
 class Contact(models.Model):
     label = models.ForeignKey(Label, on_delete=models.CASCADE, related_name='contacts')
     name = models.CharField(max_length=100)
@@ -99,8 +93,6 @@ class Contact(models.Model):
     notes = models.TextField(blank=True)
     contact_type = models.CharField(max_length=50, blank=True)
 
-
-# order
 
 class OrderStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
