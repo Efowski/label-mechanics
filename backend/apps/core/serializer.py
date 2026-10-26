@@ -200,11 +200,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         order = attrs.get("order")
         release_format = attrs.get("release_format")
-        if order and release_format:
-            print("ORDER:", order.id)
-            print("ORDER LABEL:", order.label_id)
-            print("FORMAT:", release_format.id)
-            print("FORMAT LABEL:", release_format.release.label_id)
+         
 
         if order and release_format:
             if release_format.release.label != order.label:
