@@ -1,0 +1,43 @@
+LABEL MECHANICS - ECONOMICS APP
+
+This package was prepared against the uploaded backend structure.
+It intentionally uses serializer.py (singular), matching apps/core/serializer.py.
+
+1. Replace the current scaffold directory:
+   apps/economics/
+   with the contents of this package.
+
+2. In config/settings.py add to INSTALLED_APPS:
+
+   'apps.economics.apps.EconomicsConfig',
+
+3. In config/urls.py add:
+
+   path('api/', include('apps.economics.urls')),
+
+   so urlpatterns contains both core and economics, for example:
+
+   urlpatterns = [
+       path('admin', admin.site.urls),
+       path('api/', include('apps.core.urls')),
+       path('api/', include('apps.economics.urls')),
+       path('api-auth/', include('rest_framework.urls')),
+   ]
+
+4. Run:
+
+   python manage.py makemigrations economics
+   python manage.py migrate
+
+5. Test:
+
+   http://127.0.0.1:8000/api/transactions/
+
+Suggested checks:
+- own label + positive income -> 201
+- own label + positive expense -> 201
+- foreign label -> rejected with "You do not have access to this label."
+- amount 0 -> rejected
+- negative amount -> rejected
+
+Transaction.amount is always positive. transaction_type determines whether it is income or expense.
