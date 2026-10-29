@@ -173,3 +173,53 @@ class TransactionCampaignValidationTest(APITestCase):
                 "PLN": Decimal("100.00"),
             },
         )
+
+    def test_release_total_cost_and_breakdown(self):
+        self.client.force_authenticate(user=self.user)
+
+        Transaction.objects.create(
+            label=self.label_a,
+            release = self.release_a,
+            transaction_type="expense",
+            amount=Decimal("226.00"),
+            currency="EUR",
+            date=date(2026, 3, 7),
+            category="manufacturing",
+        
+            )
+        Transaction.objects.create(
+            label=self.label_a,
+            release=self.release_a,
+            campaign=self.campaign_a,
+            transaction_type="expense",
+            amount=Decimal("20.00"),
+            currency="EUR",
+            date=date(2026, 5, 1),
+            category="promotion",
+            )
+        url = reverse("release-detail", args=[self.release_a.id])
+        response = self.client.get(url)
+
+        self.assertEqual(
+        response.status_code,
+        status.HTTP_200_OK,
+    )
+
+        self.assertEqual(
+            response.data["total_cost"],
+            {
+                "EUR": Decimal("246.00"),
+            },
+        )
+
+        self.assertEqual(
+            response.data["cost_breakdown"],
+            {
+                "manufacturing": {
+                    "EUR": Decimal("226.00"),
+                },
+                "promotion": {
+                    "EUR": Decimal("20.00"),
+                },
+            },
+        )

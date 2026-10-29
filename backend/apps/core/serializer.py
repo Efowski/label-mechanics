@@ -19,6 +19,9 @@ class MembershipSerializer(serializers.ModelSerializer):
 
 class ReleaseSerializer(serializers.ModelSerializer):
 
+    total_cost = serializers.SerializerMethodField()
+    cost_breakdown = serializers.SerializerMethodField()
+
     class Meta:
         model = Release
         fields = '__all__'
@@ -29,6 +32,44 @@ class ReleaseSerializer(serializers.ModelSerializer):
 
         return value
 
+
+    def get_total_cost(self, obj):
+        expenses = obj.transactions.filter(
+            transaction_type="expense"
+        )
+
+        totals = {}
+        for transaction in expenses:
+            currency = transaction.currency
+
+            if currency not in totals:
+                totals[currency] = 0
+
+            totals[currency] += transaction.amount
+
+        return totals 
+
+
+    def get_cost_breakdown(self, obj):
+        expenses = obj.transactions.filter(
+        transaction_type="expense"
+        )
+        breakdown = {}
+
+
+        for transaction in expenses:
+            category = transaction.category
+            currency = transaction.currency
+
+            if category not in breakdown:
+                breakdown[category] = {}
+
+            if currency not in breakdown[category]:
+                breakdown[category][currency] = 0
+
+            breakdown[category][currency] += transaction.amount     
+
+        return breakdown 
 
 class ReleaseFormatSerializer(serializers.ModelSerializer):
 
