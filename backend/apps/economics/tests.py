@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.core.models import User, Label, Membership, Release
-from apps.campaigns.models import Campaign
+from apps.campaigns.models import Campaign, CampaignMetric
 from .models import Transaction
 
  
@@ -222,4 +222,69 @@ class TransactionCampaignValidationTest(APITestCase):
                     "EUR": Decimal("20.00"),
                 },
             },
+        )
+    def test_campaign_returns_metrics(self):
+        self.client.force_authenticate(user=self.user)
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type="views",
+            value=Decimal("350.00"),
+        )
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type="reach",
+            value=Decimal("201.00"),
+        )
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type="clicks",
+            value=Decimal("12.00"),
+        )
+
+        url = reverse(
+            "campaigns-detail",
+            args=[self.campaign_a.id],
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertEqual(
+            len(response.data["metrics"]),
+            3,
+        )
+
+
+    def test_campaign_metric_cannot_use_campaign_from_another_label(self):
+        self.client.force_authenticate(user=self.user)
+
+        url = reverse("campaign-metrics-list")
+
+        data = {
+            "campaign": self.campaign_b.id,
+            "metric_type": "views",
+            "value": "350.00",
+        }
+
+        response = self.client.post(
+            url,
+            data,
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.assertIn(
+            "campaign",
+            response.data,
         )

@@ -16,3 +16,20 @@ class Campaign(models.Model):
         return self.name
 
 
+class CampaignMetric(models.Model):
+    class MetricType(models.TextChoices):
+        VIEWS = "views", "Views"
+        CLICKS = "clicks", "Clicks"
+        REACH = "reach", "Reach"
+        PROMOS_SENT = "promos_sent", "Promos sent"
+        RESPONSES = "responses", "Responses"
+    
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="metrics",)
+    metric_type = models.CharField(max_length=50, choices=MetricType.choices,)
+
+    value = models.DecimalField(max_digits=12, decimal_places=2,)
+
+
+    def __str__(self):
+        return f"{self.campaign.name} - {self.metric_type}: {self.value}"
+

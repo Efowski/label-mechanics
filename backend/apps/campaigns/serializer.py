@@ -1,10 +1,27 @@
 from rest_framework import serializers
 
-from apps.campaigns.models import Campaign
+from apps.campaigns.models import Campaign, CampaignMetric
+
+
+
+class CampaignMetricSerializer(serializers.ModelSerializer):
+    
+    class Meta:
+        model = CampaignMetric
+        fields = '__all__'
+
+    def validate_campaign(self, value):
+        user = self.context['request'].user
+
+        if not value.release.label.memberships.filter(user=user).exists():
+            raise serializers.ValidationError("You do not have access to this campaign.")
+
+        return value
 
 
 class CampaignSerializer(serializers.ModelSerializer):
     total_cost = serializers.SerializerMethodField()
+    metrics = CampaignMetricSerializer(many=True, read_only=True,)
 
     class Meta:
         model = Campaign
@@ -36,3 +53,4 @@ class CampaignSerializer(serializers.ModelSerializer):
             totals[currency] += transaction.amount
 
         return totals
+
