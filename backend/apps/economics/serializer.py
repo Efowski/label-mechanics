@@ -31,8 +31,10 @@ class TransactionSerializer(serializers.ModelSerializer):
 
 
     def validate(self, attrs):
-        label = attrs.get('label')
-        release = attrs.get('release')
+        label = attrs.get("label")
+        release = attrs.get("release")
+        campaign = attrs.get("campaign")
+
         if release and release.label != label:
             raise serializers.ValidationError(
                 {
@@ -40,6 +42,19 @@ class TransactionSerializer(serializers.ModelSerializer):
                 }
             )
 
-        return attrs
+        if campaign and campaign.release.label != label:
+            raise serializers.ValidationError(
+                {
+                    "campaign": "This campaign does not belong to this label."
+                }
+            )
 
-    
+        if campaign and release and campaign.release != release:
+            raise serializers.ValidationError(
+                {
+                    "campaign": "This campaign does not belong to this release."
+                }
+            )
+
+        return attrs
+        
