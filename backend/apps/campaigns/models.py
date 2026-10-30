@@ -33,3 +33,21 @@ class CampaignMetric(models.Model):
     def __str__(self):
         return f"{self.campaign.name} - {self.metric_type}: {self.value}"
 
+
+
+class Coverage(models.Model):
+    class CoverageType(models.TextChoices):
+        ONLINE_REVIEW = "online_review", "Online review"
+        PRINT_REVIEW = "print_review", "Print review"
+        INTERVIEW = "interview", "Interview"
+        FEATURE = "feature", "Feature"
+        OTHER = "other", "Other"
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='coverage')
+    coverage_type = models.CharField(max_length=30, choices=CoverageType.choices)
+    publication = models.CharField(max_length=200)
+    title = models.CharField(max_length=250, blank=True)
+    url = models.URLField()
+    published_at = models.DateField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.publication} - {self.campaign.name}"

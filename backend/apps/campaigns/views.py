@@ -2,8 +2,8 @@ from django.shortcuts import render
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 
-from .serializer import CampaignSerializer, CampaignMetricSerializer
-from .models import Campaign, CampaignMetric
+from .serializer import CampaignSerializer, CampaignMetricSerializer, CoverageSerializer
+from .models import Campaign, CampaignMetric, Coverage
 
 
 class CampaignViewSet(viewsets.ModelViewSet):
@@ -22,3 +22,12 @@ class CampaignMetricViewset(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return CampaignMetric.objects.filter(campaign__release__label__memberships__user=self.request.user).distinct()
+
+
+class CoverageViewset(viewsets.ModelViewSet):
+    serializer_class = CoverageSerializer
+    permission_classes = [IsAuthenticated]
+
+
+    def get_queryset(self):
+        return Coverage.objects.filter(campaign__release__label__memberships__user=self.request.user).distinct()

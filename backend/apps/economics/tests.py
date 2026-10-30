@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.core.models import User, Label, Membership, Release
-from apps.campaigns.models import Campaign, CampaignMetric
+from apps.campaigns.models import Campaign, CampaignMetric, Coverage
 from .models import Transaction
 
  
@@ -271,6 +271,60 @@ class TransactionCampaignValidationTest(APITestCase):
             "campaign": self.campaign_b.id,
             "metric_type": "views",
             "value": "350.00",
+        }
+
+        response = self.client.post(
+            url,
+            data,
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.assertIn(
+            "campaign",
+            response.data,
+        )
+
+    def test_campaign_returns_coverage(self):
+        self.client.force_authenticate(user=self.user)
+
+        Coverage.objects.create(campaign=self.campaign_a, coverage_type='online_review', publication='Magazine', title='Title',
+                                url='https://example.com/review/', published_at=date(2026, 5, 10),)
+
+
+        url = reverse(
+        "campaigns-detail",
+        args=[self.campaign_a.id],
+    )
+
+        response = self.client.get(url)
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertEqual(
+            len(response.data["coverage"]),
+            1,
+        )
+
+    def test_coverage_cannot_use_campaign_from_another_label(self):
+        self.client.force_authenticate(user=self.user)
+
+        url = reverse("coverage-list")
+
+        data = {
+            "campaign": self.campaign_b.id,
+            "coverage_type": "online_review",
+            "publication": "Test Magazine",
+            "title": "Test review",
+            "url": "https://example.com/review/",
+            "published_at": "2026-05-10",
         }
 
         response = self.client.post(
