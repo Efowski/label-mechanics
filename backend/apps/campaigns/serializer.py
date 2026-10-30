@@ -38,6 +38,9 @@ class CampaignSerializer(serializers.ModelSerializer):
     metrics = CampaignMetricSerializer(many=True, read_only=True,)
     coverage = CoverageSerializer(many=True, read_only=True,)
 
+    results_summary = serializers.SerializerMethodField()
+
+
     class Meta:
         model = Campaign
         fields = "__all__"
@@ -70,3 +73,51 @@ class CampaignSerializer(serializers.ModelSerializer):
         return totals
 
 
+    def get_results_summary(self, obj):
+        if obj.campaign_type == Campaign.CampaignType.SOCIAL:
+            metrics = {
+                metric.metric_type: metric.value
+                for metric in obj.metrics.all()
+            }
+
+            views = metrics.get("views")
+            reach = metrics.get("reach")
+            clicks = metrics.get("clicks")
+
+            summary = {
+                "views": views,
+                "reach": reach,
+                "link_clicks": clicks,
+            }
+
+            if views and clicks is not None:
+                summary["clicks_per_100_views"] = round(
+                    (clicks / views) * 100,
+                    2,
+                )
+
+            return summary
+
+        if obj.campaign_type == Campaign.CampaignType.OUTREACH:
+            metrics = {
+                metric.metric_type: metric.value
+                for metric in obj.metrics.all()
+            }
+
+            promos_sent = metrics.get("promos_sent")
+            coverage_count = obj.coverage.count()
+
+            summary = {
+                "promos_sent": promos_sent,
+                "coverage_count": coverage_count,
+            }
+
+            if promos_sent:
+                summary["coverage_rate"] = round(
+                    (coverage_count / promos_sent) * 100,
+                    2,
+                )
+
+            return summary
+
+        return {}

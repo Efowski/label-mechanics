@@ -342,3 +342,74 @@ class TransactionCampaignValidationTest(APITestCase):
             "campaign",
             response.data,
         )
+
+    def test_social_campaign_returns_results_summary(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.campaign_a.campaign_type = Campaign.CampaignType.SOCIAL
+        self.campaign_a.save()
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type=CampaignMetric.MetricType.VIEWS,
+            value=Decimal("350.00"),
+        )
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type=CampaignMetric.MetricType.REACH,
+            value=Decimal("201.00"),
+        )
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type=CampaignMetric.MetricType.CLICKS,
+            value=Decimal("12.00"),
+        )
+
+        url = reverse("campaigns-detail", args=[self.campaign_a.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["results_summary"]["clicks_per_100_views"],
+            Decimal("3.43"),
+        )   
+
+    def test_outreach_campaign_returns_results_summary(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.campaign_a.campaign_type = Campaign.CampaignType.OUTREACH
+        self.campaign_a.save()
+
+        CampaignMetric.objects.create(
+            campaign=self.campaign_a,
+            metric_type=CampaignMetric.MetricType.PROMOS_SENT,
+            value=Decimal("5.00"),
+        )
+
+        Coverage.objects.create(
+            campaign=self.campaign_a,
+            coverage_type=Coverage.CoverageType.ONLINE_REVIEW,
+            publication="Test Magazine",
+            title="Test review",
+            url="https://example.com/review/",
+            published_at=date(2026, 5, 10),
+        )
+
+        url = reverse("campaigns-detail", args=[self.campaign_a.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["results_summary"]["promos_sent"],
+            Decimal("5.00"),
+        )
+        self.assertEqual(
+            response.data["results_summary"]["coverage_count"],
+            1,
+        )
+        self.assertEqual(
+            response.data["results_summary"]["coverage_rate"],
+            Decimal("20.00"),
+        )

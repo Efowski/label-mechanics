@@ -3,6 +3,12 @@ from apps.core.models import Release
 
 
 class Campaign(models.Model):
+    class CampaignType(models.TextChoices):
+        SOCIAL = "social", "Social media"
+        PAID_ADS = "paid_ads", "Paid advertising"
+        OUTREACH = "outreach", "Promo outreach"
+        OTHER = "other", "Other"
+    campaign_type = models.CharField(max_length=40, choices=CampaignType.choices, default=CampaignType.OTHER)
     release = models.ForeignKey(Release, on_delete=models.CASCADE, related_name='campaigns')
     name = models.CharField(max_length=250)
     channel = models.CharField(max_length=100, blank=True)
