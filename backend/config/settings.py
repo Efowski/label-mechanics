@@ -19,6 +19,10 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 
+SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID")
+SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -37,6 +41,7 @@ INSTALLED_APPS = [
     'apps.core.apps.CoreConfig',
     'apps.economics',
     'apps.campaigns',
+    'apps.integrations',
     
 ]
 

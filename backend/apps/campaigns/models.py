@@ -9,6 +9,7 @@ class Campaign(models.Model):
         OUTREACH = "outreach", "Promo outreach"
         OTHER = "other", "Other"
     campaign_type = models.CharField(max_length=40, choices=CampaignType.choices, default=CampaignType.OTHER)
+    utm_campaign = models.CharField(max_length=255, blank=True, default='', db_index=True)
     release = models.ForeignKey(Release, on_delete=models.CASCADE, related_name='campaigns')
     name = models.CharField(max_length=250)
     channel = models.CharField(max_length=100, blank=True)

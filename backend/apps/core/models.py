@@ -3,7 +3,6 @@ from django.contrib.auth.models import AbstractUser
 
 
 
-
 class Label(models.Model):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
@@ -107,13 +106,34 @@ class Order(models.Model):
     label = models.ForeignKey(Label, on_delete=models.CASCADE, related_name='orders')
     contact = models.ForeignKey(Contact, on_delete=models.CASCADE, related_name='orders', null=True, blank=True)
     order_date = models.DateField()
+    external_id = models.CharField(max_length=255, blank=True, null=True)
+    sales_channel = models.ForeignKey('economics.SalesChannel', on_delete=models.PROTECT, related_name='orders', blank=True, null=True)
     status = models.CharField(max_length=40 , choices=OrderStatus.choices, default=OrderStatus.DRAFT)
     currency = models.CharField(max_length=4, default="EUR")
     notes = models.TextField(blank=True)
 
+    class Meta:
+        constraints = [
+        models.UniqueConstraint(
+            fields=["sales_channel", "external_id"],
+            name="unique_order_per_sales_channel",
+        ),
+        ]
+
 
 class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
-    release_format = models.ForeignKey(ReleaseFormat, on_delete=models.CASCADE, related_name='order_items')
+    release_format = models.ForeignKey(ReleaseFormat, on_delete=models.SET_NULL, related_name='order_items', null=True, blank=True)
+    external_variant_id = models.CharField(max_length=255, blank=True, default="",)
+    external_line_item_id = models.CharField(max_length=255, blank=True, null=True)
+    product_name = models.CharField(max_length=255, blank=True, default="",)
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        constraints = [
+        models.UniqueConstraint(
+            fields=["order", "external_line_item_id"],
+            name="unique_external_line_item_per_order",
+        ),
+        ]
