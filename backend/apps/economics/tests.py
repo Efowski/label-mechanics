@@ -6,7 +6,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.core.models import User, Label, Membership, Release
+from apps.core.models import User, Label, Membership, Release, Order
 from apps.campaigns.models import Campaign, CampaignMetric, Coverage
 from .models import Transaction
 
@@ -412,4 +412,116 @@ class TransactionCampaignValidationTest(APITestCase):
         self.assertEqual(
             response.data["results_summary"]["coverage_rate"],
             Decimal("20.00"),
+        )
+
+
+class TransactionPartialUpdateTest(APITestCase):
+
+    def setUp(self):
+        self.user = User.objects.create(username='patch_user', password='test123')
+        self.label = Label.objects.create(name='Patch Label')
+        Membership.objects.create(user=self.user, label=self.label)
+        self.release = Release.objects.create(label=self.label, title='Title A', artist='Test Artist', catalog_number='TEST-PATCH-001')
+
+        self.transaction = Transaction.objects.create(label=self.label, transaction_type='expense', amount=Decimal('50.00'),  currency="EUR", date=date(2026, 11, 18), category='Promotion')
+
+    def test_patch_release_without_label(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.patch(f"/api/transactions/{self.transaction.id}/", {"release": self.release.id}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.transaction.refresh_from_db()
+        self.assertEqual(self.transaction.release, self.release,)
+
+
+    def test_cannot_assign_order_from_another_label(self):
+        other_label = Label.objects.create(
+                        name="Other Label",
+                    )
+        
+        other_order = Order.objects.create(
+                        label=other_label,
+                        order_date=date(2026, 11, 18),
+                    )
+        
+        self.client.force_authenticate(user=self.user)
+        
+        response = self.client.patch(
+                        f"/api/transactions/{self.transaction.id}/",
+                        {"order": other_order.id},
+                        format="json",
+                    )
+        
+        self.assertEqual(
+                        response.status_code,
+                        status.HTTP_400_BAD_REQUEST,
+                    )
+        
+        self.assertIn("order", response.data)
+        
+        self.transaction.refresh_from_db()
+        
+        self.assertIsNone(self.transaction.order)
+
+
+    def test_cannot_change_label_with_existing_release(self):
+        other_label = Label.objects.create(
+            name="Second Label",
+        )
+
+        Membership.objects.create(
+            user=self.user,
+            label=other_label,
+        )
+
+        self.transaction.release = self.release
+        self.transaction.save()
+
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.patch(
+            f"/api/transactions/{self.transaction.id}/",
+            {"label": other_label.id},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.assertIn("release", response.data)
+
+        self.transaction.refresh_from_db()
+
+        self.assertEqual(self.transaction.label, self.label)
+        self.assertEqual(self.transaction.release, self.release)
+
+
+    def test_user_cannot_update_another_labels_transaction(self):
+        outsider = User.objects.create_user(
+            username="outsider",
+            password="test123",
+        )
+
+        self.client.force_authenticate(user=outsider)
+
+        response = self.client.patch(
+            f"/api/transactions/{self.transaction.id}/",
+            {"amount": "999.00"},
+            format="json",
+        )
+
+        self.assertIn(
+            response.status_code,
+            [
+                status.HTTP_403_FORBIDDEN,
+                status.HTTP_404_NOT_FOUND,
+            ],
+        )
+
+        self.transaction.refresh_from_db()
+
+        self.assertEqual(
+            self.transaction.amount,
+            Decimal("50.00"),
         )

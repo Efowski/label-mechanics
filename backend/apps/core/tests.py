@@ -238,3 +238,246 @@ class OrderPaymentTest(APITestCase):
             Transaction.objects.filter(order=self.order).count(),
             1,
         )
+
+    def test_cannot_pay_order_with_insufficient_stock(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.release_format.stock_quantity = 1
+        self.release_format.save()
+
+        url = reverse(
+            "orders-detail",
+            args=[self.order.id],
+        )
+
+        response = self.client.patch(
+            url,
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.release_format.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(
+            self.release_format.stock_quantity,
+            1,
+        )
+
+        self.assertNotEqual(
+            self.order.status,
+            "paid",
+        )
+
+        self.assertFalse(
+            Transaction.objects.filter(
+                order=self.order,
+            ).exists()
+        )
+
+    def test_cannot_pay_order_when_combined_items_exceed_stock(self):
+        self.client.force_authenticate(user=self.user)
+
+        # Dostępnych jest 5 egzemplarzy.
+        self.release_format.stock_quantity = 5
+        self.release_format.save(update_fields=["stock_quantity"])
+
+        # Istniejąca pozycja zamówienia zawiera 2 egzemplarze.
+        # Dodajemy kolejne 4 egzemplarze tego samego formatu.
+        from apps.core.models import OrderItem
+
+        OrderItem.objects.create(
+            order=self.order,
+            release_format=self.release_format,
+            quantity=4,
+            unit_price=Decimal("20.00"),
+        )
+
+        url = reverse(
+            "orders-detail",
+            args=[self.order.id],
+        )
+
+        response = self.client.patch(
+            url,
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.release_format.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.release_format.stock_quantity, 5)
+        self.assertNotEqual(self.order.status, "paid")
+
+        self.assertFalse(
+            Transaction.objects.filter(order=self.order).exists()
+        )
+
+
+    def test_cannot_modify_items_of_paid_order(self):
+        self.client.force_authenticate(user=self.user)
+
+        # Najpierw opłacamy zamówienie.
+        order_url = reverse(
+            "orders-detail",
+            args=[self.order.id],
+        )
+
+        response = self.client.patch(
+            order_url,
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Pobieramy istniejącą pozycję zamówienia.
+        item = self.order.items.first()
+        original_quantity = item.quantity
+
+        # Próbujemy zmienić ilość po opłaceniu.
+        item_url = reverse(
+            "order-item-detail",
+            args=[item.id],
+        )
+
+        response = self.client.patch(
+            item_url,
+            {"quantity": 5},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        item.refresh_from_db()
+
+        self.assertEqual(item.quantity, original_quantity)
+
+    def test_cannot_delete_item_from_paid_order(self):
+        self.client.force_authenticate(user=self.user)
+    
+        order_url = reverse(
+                "orders-detail",
+                args=[self.order.id],
+            )
+    
+        response = self.client.patch(
+                order_url,
+                {"status": "paid"},
+                format="json",
+            )
+    
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+    
+        item = self.order.items.first()
+    
+        item_url = reverse(
+                "order-item-detail",
+                args=[item.id],
+            )
+    
+        response = self.client.delete(item_url)
+    
+        self.assertEqual(
+                response.status_code,
+                status.HTTP_400_BAD_REQUEST,
+            )
+    
+        self.assertTrue(
+                OrderItem.objects.filter(pk=item.pk).exists()
+            )
+
+
+    def test_cannot_add_item_to_paid_order(self):
+        self.client.force_authenticate(user=self.user)
+
+        # Opłacamy zamówienie.
+        order_url = reverse(
+            "orders-detail",
+            args=[self.order.id],
+        )
+
+        response = self.client.patch(
+            order_url,
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        original_count = self.order.items.count()
+
+        # Próbujemy dodać kolejną pozycję.
+        item_url = reverse("order-item-list")
+
+        response = self.client.post(
+            item_url,
+            {
+                "order": self.order.id,
+                "release_format": self.release_format.id,
+                "quantity": 1,
+                "unit_price": "20.00",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        # Liczba pozycji nie powinna się zmienić.
+        self.assertEqual(
+            self.order.items.count(),
+            original_count,
+        )
+
+
+    def test_cannot_change_currency_of_paid_order(self):
+        self.client.force_authenticate(user=self.user)
+
+        order_url = reverse(
+            "orders-detail",
+            args=[self.order.id],
+        )
+
+        response = self.client.patch(
+            order_url,
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.order.refresh_from_db()
+        original_currency = self.order.currency
+
+        new_currency = "EUR" if original_currency != "EUR" else "PLN"
+
+        response = self.client.patch(
+            order_url,
+            {"currency": new_currency},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.currency, original_currency)

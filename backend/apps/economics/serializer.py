@@ -1,7 +1,6 @@
 from rest_framework import serializers
 
 from apps.core.models import Membership
-
 from .models import Transaction
 
 
@@ -29,32 +28,61 @@ class TransactionSerializer(serializers.ModelSerializer):
 
         return value
 
-
     def validate(self, attrs):
-        label = attrs.get("label")
-        release = attrs.get("release")
-        campaign = attrs.get("campaign")
+        instance = self.instance
 
-        if release and release.label != label:
+        label = attrs.get(
+            "label",
+            instance.label if instance else None,
+        )
+
+        release = attrs.get(
+            "release",
+            instance.release if instance else None,
+        )
+
+        campaign = attrs.get(
+            "campaign",
+            instance.campaign if instance else None,
+        )
+
+        order = attrs.get(
+            "order",
+            instance.order if instance else None,
+        )
+
+        if label is None:
             raise serializers.ValidationError(
-                {
-                    "release": "This release does not belong to this label."
-                }
+                {"label": "A label is required."}
             )
 
-        if campaign and campaign.release.label != label:
+        if not Membership.objects.filter(
+            user=self.context["request"].user,
+            label=label,
+        ).exists():
             raise serializers.ValidationError(
-                {
-                    "campaign": "This campaign does not belong to this label."
-                }
+                {"label": "You do not have access to this label."}
             )
 
-        if campaign and release and campaign.release != release:
+        if release and release.label_id != label.id:
             raise serializers.ValidationError(
-                {
-                    "campaign": "This campaign does not belong to this release."
-                }
+                {"release": "This release does not belong to this label."}
+            )
+
+        if campaign:
+            if campaign.release.label_id != label.id:
+                raise serializers.ValidationError(
+                    {"campaign": "This campaign does not belong to this label."}
+                )
+
+            if release and campaign.release_id != release.id:
+                raise serializers.ValidationError(
+                    {"campaign": "This campaign does not belong to this release."}
+                )
+
+        if order and order.label_id != label.id:
+            raise serializers.ValidationError(
+                {"order": "This order does not belong to this label."}
             )
 
         return attrs
-        

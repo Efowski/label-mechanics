@@ -2,6 +2,11 @@ from rest_framework import serializers
 from .models import Label, Membership, Release, ReleaseFormat, Track, Contact, Order, OrderItem
 from django.db import transaction
 
+from collections import defaultdict
+from decimal import Decimal
+
+from django.db.models import F
+
 class LabelSerializer(serializers.ModelSerializer):
 
     class Meta:
@@ -134,24 +139,84 @@ class OrderSerializer(serializers.ModelSerializer):
             return value
 
     def validate(self, attrs):
-        label = attrs.get('label')
-        contact = attrs.get('contact')
+        instance = self.instance
+
+        label = attrs.get(
+            "label",
+            instance.label if instance else None
+        )
+        contact = attrs.get(
+            "contact",
+            instance.contact if instance else None
+        )
+
+        # Kontakt musi należeć do tego samego wydawnictwa.
         if contact and contact.label != label:
-            raise serializers.ValidationError( {
-                    "contact": "This contact does not belong to this label."
-                })
+            raise serializers.ValidationError({
+                "contact": "This contact does not belong to this label."
+            })
+
+        # Po opłaceniu zamówienia blokujemy zmianę
+        # danych finansowych i identyfikacyjnych.
+        if instance and instance.status == "paid":
+            protected_fields = [
+                "label",
+                "contact",
+                "order_date",
+                "currency",
+                "sales_channel",
+                "external_id",
+            ]
+
+            for field in protected_fields:
+                if field in attrs:
+                    current_value = getattr(instance, field)
+                    new_value = attrs[field]
+
+                    if current_value != new_value:
+                        raise serializers.ValidationError({
+                            field: (
+                                "This field cannot be changed "
+                                "after the order has been paid."
+                            )
+                        })
 
         return attrs
 
+    
     def update(self, instance, validated_data):
-        old_status = instance.status
+        from apps.economics.models import Transaction
+
         new_status = validated_data.get("status", instance.status)
 
-        # Specjalna logika tylko przy przejściu na "paid"
-        if old_status != "paid" and new_status == "paid":
+        # Zwykłe aktualizacje obsługujemy bez księgowania sprzedaży.
+        if new_status != "paid":
+            return super().update(instance, validated_data)
 
-            # Order nie może być pusty
-            if not instance.items.exists():
+        # Cały proces płatności musi być atomowy.
+        with transaction.atomic():
+
+            # Pobieramy aktualny Order i blokujemy go na czas operacji.
+            order = Order.objects.select_for_update().get(
+                pk=instance.pk
+            )
+
+            # Zamówienie już opłacone - bez ponownego księgowania.
+            if order.status == "paid":
+                return super().update(order, validated_data)
+
+            # Zachowujemy dotychczasowe zabezpieczenie przed
+            # ponownym odjęciem towaru i zaksięgowaniem sprzedaży.
+            transaction_exists = Transaction.objects.filter(
+                order=order
+            ).exists()
+
+            if transaction_exists:
+                return super().update(order, validated_data)
+
+            items = list(order.items.all())
+
+            if not items:
                 raise serializers.ValidationError({
                     "items": (
                         "Order must contain at least one item "
@@ -159,63 +224,79 @@ class OrderSerializer(serializers.ModelSerializer):
                     )
                 })
 
-            # Sprawdzamy stock wszystkich pozycji
-            for item in instance.items.all():
-                if item.release_format.stock_quantity < item.quantity:
+            required_stock = defaultdict(int)
+            total_amount = Decimal("0.00")
+
+            for item in items:
+                if item.release_format_id is None:
+                    raise serializers.ValidationError({
+                        "stock": "Order item has no assigned release format."
+                    })
+
+                required_stock[item.release_format_id] += item.quantity
+                total_amount += item.quantity * item.unit_price
+
+            # Blokujemy formaty w stałej kolejności, aby ograniczyć
+            # ryzyko zakleszczeń przy równoczesnych zamówieniach.
+            formats = {
+                release_format.pk: release_format
+                for release_format in ReleaseFormat.objects
+                    .select_for_update()
+                    .filter(pk__in=required_stock.keys())
+                    .order_by("pk")
+            }
+
+            # Kontrola całkowitego zapotrzebowania.
+            for format_id, quantity in required_stock.items():
+                release_format = formats.get(format_id)
+
+                if release_format is None:
+                    raise serializers.ValidationError({
+                        "stock": "Release format no longer exists."
+                    })
+
+                if release_format.stock_quantity < quantity:
                     raise serializers.ValidationError({
                         "stock": (
-                            f"Not enough stock for {item.release_format}. "
-                            f"Available: "
-                            f"{item.release_format.stock_quantity}, "
-                            f"required: {item.quantity}."
+                            f"Not enough stock for {release_format}. "
+                            f"Available: {release_format.stock_quantity}, "
+                            f"required: {quantity}."
                         )
                     })
 
-            from apps.economics.models import Transaction
+            # Atomowe odejmowanie z dodatkowym warunkiem dostępności.
+            for format_id, quantity in required_stock.items():
+                updated = ReleaseFormat.objects.filter(
+                    pk=format_id,
+                    stock_quantity__gte=quantity,
+                ).update(
+                    stock_quantity=F("stock_quantity") - quantity
+                )
 
-            # Order + stock + Transaction są jedną operacją
-            with transaction.atomic():
-
-                # Aktualizujemy Order
-                order = super().update(instance, validated_data)
-
-                transaction_exists = Transaction.objects.filter(
-                    order=order
-                ).exists()
-
-                # Jeżeli Order nie był wcześniej zaksięgowany
-                if not transaction_exists:
-
-                    # Odejmujemy sprzedane egzemplarze ze stocku
-                    for item in order.items.all():
-                        release_format = item.release_format
-                        release_format.stock_quantity -= item.quantity
-                        release_format.save(
-                            update_fields=["stock_quantity"]
+                if updated != 1:
+                    raise serializers.ValidationError({
+                        "stock": (
+                            "Stock changed during payment processing. "
+                            "Please try again."
                         )
+                    })
 
-                    # Liczymy wartość całego Ordera
-                    total_amount = sum(
-                        item.quantity * item.unit_price
-                        for item in order.items.all()
-                    )
+            # Zmieniamy status zamówienia.
+            order = super().update(order, validated_data)
 
-                    # Tworzymy przychód
-                    Transaction.objects.create(
-                        label=order.label,
-                        order=order,
-                        transaction_type="income",
-                        category="sales",
-                        amount=total_amount,
-                        currency=order.label.currency,
-                        date=order.order_date,
-                        description=f"Sale from order #{order.id}",
-                    )
+            # Tworzymy przychód tylko po udanym odjęciu towaru.
+            Transaction.objects.create(
+                label=order.label,
+                order=order,
+                transaction_type="income",
+                category="sales",
+                amount=total_amount,
+                currency=order.currency,
+                date=order.order_date,
+                description=f"Sale from order #{order.id}",
+            )
 
-                return order
-
-        # Wszystkie inne zmiany Ordera
-        return super().update(instance, validated_data)
+            return order
 
 
 class OrderItemSerializer(serializers.ModelSerializer):

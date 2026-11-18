@@ -1,6 +1,8 @@
 from django.shortcuts import render
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework import serializers
+
 from .serializer import (LabelSerializer,
                           MembershipSerializer, ReleaseSerializer, ReleaseFormatSerializer, TrackSerializer,
                           ContactSerializer, OrderSerializer, OrderItemSerializer)
@@ -72,3 +74,43 @@ class OrderItemViewSet(viewsets.ModelViewSet):
         return OrderItem.objects.filter(
             order__label__memberships__user=self.request.user
         ).distinct()
+
+    def perform_create(self, serializer):
+        order = serializer.validated_data["order"]
+
+        if order.status == "paid":
+            raise serializers.ValidationError({
+                "order": "Cannot add items to a paid order."
+            })
+
+        serializer.save()
+
+    def perform_update(self, serializer):
+        order = serializer.instance.order
+
+        if order.status == "paid":
+            raise serializers.ValidationError({
+                "order": "Cannot modify items of a paid order."
+            })
+
+        # Nie pozwalamy również przenosić pozycji
+        # do już opłaconego zamówienia.
+        new_order = serializer.validated_data.get("order")
+
+        if new_order and new_order.status == "paid":
+            raise serializers.ValidationError({
+                "order": "Cannot move items to a paid order."
+            })
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.order.status == "paid":
+            raise serializers.ValidationError({
+                "order": "Cannot delete items from a paid order."
+            })
+
+        instance.delete()
+
+
+   

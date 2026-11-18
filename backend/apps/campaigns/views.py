@@ -9,6 +9,7 @@ from .models import Campaign, CampaignMetric, Coverage
 class CampaignViewSet(viewsets.ModelViewSet):
 
     serializer_class = CampaignSerializer
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return Campaign.objects.filter(release__label__memberships__user=self.request.user).distinct()
