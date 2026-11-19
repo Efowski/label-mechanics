@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Label, Membership, Release, ReleaseFormat, Track, Contact, Order, OrderItem
+from .models import Label, Membership, Release, ReleaseFormat, Track, Contact, Order, OrderItem, OrderStatus
 from django.db import transaction
 
 from collections import defaultdict
@@ -7,11 +7,36 @@ from decimal import Decimal
 
 from django.db.models import F
 
-class LabelSerializer(serializers.ModelSerializer):
 
+class LabelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Label
-        fields = '__all__'
+        fields = [
+            "id",
+            "name",
+            "description",
+            "website",
+            "country",
+            "currency",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+        ]
+
+
+    def validate_currency(self, value):
+        value = value.strip().upper()
+
+        if len(value) != 3 or not value.isalpha():
+            raise serializers.ValidationError(
+                "Currency must be a 3-letter ISO code."
+            )
+
+        return value
 
 
 
@@ -158,7 +183,8 @@ class OrderSerializer(serializers.ModelSerializer):
 
         # Po opłaceniu zamówienia blokujemy zmianę
         # danych finansowych i identyfikacyjnych.
-        if instance and instance.status == "paid":
+        if instance and instance.status in {OrderStatus.PAID, OrderStatus.SHIPPED, OrderStatus.COMPLETED,}:
+
             protected_fields = [
                 "label",
                 "contact",
@@ -298,6 +324,48 @@ class OrderSerializer(serializers.ModelSerializer):
 
             return order
 
+    def validate_status(self, value):
+        if self.instance is None:
+            if value not in {
+                OrderStatus.DRAFT,
+                OrderStatus.PENDING,
+            }:
+                raise serializers.ValidationError(
+                    "New orders must start as draft or pending."
+                )
+            return value
+
+        current_status = self.instance.status
+
+        if value == current_status:
+            return value
+
+        allowed_transitions = {
+            OrderStatus.DRAFT: {
+                OrderStatus.PENDING,
+                OrderStatus.CANCELLED,
+            },
+            OrderStatus.PENDING: {
+                OrderStatus.PAID,
+                OrderStatus.CANCELLED,
+            },
+            OrderStatus.PAID: {
+                OrderStatus.SHIPPED,
+            },
+            OrderStatus.SHIPPED: {
+                OrderStatus.COMPLETED,
+            },
+            OrderStatus.COMPLETED: set(),
+            OrderStatus.CANCELLED: set(),
+        }
+
+        if value not in allowed_transitions.get(current_status, set()):
+            raise serializers.ValidationError(
+                f"Cannot change order status from "
+                f"'{current_status}' to '{value}'."
+            )
+
+        return value
 
 class OrderItemSerializer(serializers.ModelSerializer):
 
@@ -320,21 +388,30 @@ class OrderItemSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        order = attrs.get("order")
-        release_format = attrs.get("release_format")
-         
+        instance = self.instance
+
+        order = attrs.get(
+            "order",
+            instance.order if instance else None,
+        )
+
+        release_format = attrs.get(
+            "release_format",
+            instance.release_format if instance else None,
+        )
 
         if order and release_format:
-            if release_format.release.label != order.label:
-                raise serializers.ValidationError(
-                    {
-                        "release_format":
-                            "This release format does not belong to this order's label."
-                    }
-                )
+            if release_format.release.label_id != order.label_id:
+                raise serializers.ValidationError({
+                    "release_format": (
+                        "This release format does not belong "
+                        "to this order's label."
+                    )
+                })
 
         return attrs
 
+    
     def create(self, validated_data):
         if 'unit_price' not in validated_data:
             release_format = validated_data['release_format']

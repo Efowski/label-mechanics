@@ -183,7 +183,7 @@ class OrderPaymentTest(APITestCase):
 
 
     def test_paying_order_twice_does_not_duplicate_effects(self):
-            
+
         self.client.force_authenticate(user=self.user)
 
         url = reverse(
@@ -203,7 +203,7 @@ class OrderPaymentTest(APITestCase):
             status.HTTP_200_OK,
         )
 
-        # Move order back to pending
+        # Paid orders cannot return to pending.
         pending_response = self.client.patch(
             url,
             {"status": "pending"},
@@ -212,10 +212,10 @@ class OrderPaymentTest(APITestCase):
 
         self.assertEqual(
             pending_response.status_code,
-            status.HTTP_200_OK,
+            status.HTTP_400_BAD_REQUEST,
         )
 
-        # Try to pay the same order again
+        # Sending the same paid status again must be idempotent.
         second_response = self.client.patch(
             url,
             {"status": "paid"},
@@ -227,7 +227,13 @@ class OrderPaymentTest(APITestCase):
             status.HTTP_200_OK,
         )
 
+        self.order.refresh_from_db()
         self.release_format.refresh_from_db()
+
+        self.assertEqual(
+            self.order.status,
+            "paid",
+        )
 
         self.assertEqual(
             self.release_format.stock_quantity,
@@ -238,7 +244,7 @@ class OrderPaymentTest(APITestCase):
             Transaction.objects.filter(order=self.order).count(),
             1,
         )
-
+    
     def test_cannot_pay_order_with_insufficient_stock(self):
         self.client.force_authenticate(user=self.user)
 
@@ -481,3 +487,48 @@ class OrderPaymentTest(APITestCase):
 
         self.order.refresh_from_db()
         self.assertEqual(self.order.currency, original_currency)
+
+
+    def test_completed_order_cannot_be_paid_again(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.order.status = "completed"
+        self.order.save(update_fields=["status"])
+
+        response = self.client.patch(
+            reverse("orders-detail", args=[self.order.id]),
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+    def test_cancelled_order_cannot_be_paid(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.order.status = "cancelled"
+        self.order.save(update_fields=["status"])
+
+        response = self.client.patch(
+            reverse("orders-detail", args=[self.order.id]),
+            {"status": "paid"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+    def test_paid_order_cannot_be_cancelled(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.order.status = "paid"
+        self.order.save(update_fields=["status"])
+
+        response = self.client.patch(
+            reverse("orders-detail", args=[self.order.id]),
+            {"status": "cancelled"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
