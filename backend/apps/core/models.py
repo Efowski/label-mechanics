@@ -69,6 +69,7 @@ class ReleaseFormat(models.Model):
     quantity_produced = models.IntegerField(default=0)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    cost_currency = models.CharField(max_length=4, default='EUR')
     stock_quantity = models.PositiveIntegerField(default=0)
     status = models.CharField(max_length=20, choices=FormatStatus.choices, default=FormatStatus.PLANNED)
 

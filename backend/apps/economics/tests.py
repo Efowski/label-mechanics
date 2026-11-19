@@ -6,9 +6,9 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.core.models import User, Label, Membership, Release, Order
+from apps.core.models import User, Label, Membership, Release, Order, ReleaseFormat, OrderItem
 from apps.campaigns.models import Campaign, CampaignMetric, Coverage
-from .models import Transaction
+from .models import Transaction, TransactionType
 
  
 class TransactionCampaignValidationTest(APITestCase):
@@ -525,3 +525,592 @@ class TransactionPartialUpdateTest(APITestCase):
             self.transaction.amount,
             Decimal("50.00"),
         )
+
+
+class FinancialSummaryTest(APITestCase):
+
+    def setUp(self):
+        self.user = User.objects.create(username='reportuser', password='test123')
+        self.label = Label.objects.create(name='Test Label', currency='PLN')
+
+        Membership.objects.create(user=self.user, label=self.label)
+        self.client.force_authenticate(user=self.user)
+
+
+    def test_financial_summary_calculates_balance(self):
+        Transaction.objects.create(
+            label=self.label,
+            transaction_type="income",
+            amount=Decimal("1000.00"),
+            currency="PLN",
+            date=date(2026, 11, 18),
+        )
+
+        Transaction.objects.create(
+            label=self.label,
+            transaction_type="expense",
+            amount=Decimal("400.00"),
+            currency="PLN",
+            date=date(2026, 11, 18),
+        )
+
+        url = reverse("financial-summary")
+
+        response = self.client.get(
+            url,
+            {"label": self.label.id},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertEqual(
+            response.data["currencies"]["PLN"]["income"],
+            "1000.00",
+        )
+
+        self.assertEqual(
+            response.data["currencies"]["PLN"]["expenses"],
+            "400.00",
+        )
+
+        self.assertEqual(
+            response.data["currencies"]["PLN"]["balance"],
+            "600.00",
+        )    
+
+
+    def test_cannot_access_another_labels_financial_summary(self):
+            other_user = User.objects.create_user(
+                username="other_report_user",
+                password="testpass123",
+            )
+    
+            other_label = Label.objects.create(
+                name="Other Records",
+                currency="EUR",
+            )
+    
+            Membership.objects.create(
+                user=other_user,
+                label=other_label,
+            )
+    
+            Transaction.objects.create(
+                label=other_label,
+                transaction_type="income",
+                amount=Decimal("5000.00"),
+                currency="EUR",
+                date=date(2026, 11, 18),
+            )
+    
+            url = reverse("financial-summary")
+    
+            response = self.client.get(
+                url,
+                {"label": other_label.id},
+            )
+    
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_403_FORBIDDEN,
+            )
+
+
+    def test_financial_summary_separates_currencies(self):
+        transactions = [
+            ("income", "1000.00", "PLN"),
+            ("expense", "300.00", "PLN"),
+            ("income", "500.00", "EUR"),
+            ("expense", "150.00", "EUR"),
+        ]
+
+        for transaction_type, amount, currency in transactions:
+            Transaction.objects.create(
+                label=self.label,
+                transaction_type=transaction_type,
+                amount=Decimal(amount),
+                currency=currency,
+                date=date(2026, 11, 18),
+            )
+
+        response = self.client.get(
+            reverse("financial-summary"),
+            {"label": self.label.id},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        currencies = response.data["currencies"]
+
+        self.assertEqual(set(currencies.keys()), {"PLN", "EUR"})
+
+        self.assertEqual(currencies["PLN"]["income"], "1000.00")
+        self.assertEqual(currencies["PLN"]["expenses"], "300.00")
+        self.assertEqual(currencies["PLN"]["balance"], "700.00")
+
+        self.assertEqual(currencies["EUR"]["income"], "500.00")
+        self.assertEqual(currencies["EUR"]["expenses"], "150.00")
+        self.assertEqual(currencies["EUR"]["balance"], "350.00")
+
+
+    def test_financial_summary_filters_by_date(self):
+        transactions = [
+            ("income", "1000.00", date(2026, 10, 10)),
+            ("expense", "300.00", date(2026, 10, 15)),
+            ("income", "2000.00", date(2026, 11, 5)),
+            ("expense", "500.00", date(2026, 11, 10)),
+        ]
+
+        for transaction_type, amount, transaction_date in transactions:
+            Transaction.objects.create(
+                label=self.label,
+                transaction_type=transaction_type,
+                amount=Decimal(amount),
+                currency="PLN",
+                date=transaction_date,
+            )
+
+        response = self.client.get(
+            reverse("financial-summary"),
+            {
+                "label": self.label.id,
+                "date_from": "2026-10-01",
+                "date_to": "2026-10-31",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        pln = response.data["currencies"]["PLN"]
+
+        self.assertEqual(pln["income"], "1000.00")
+        self.assertEqual(pln["expenses"], "300.00")
+        self.assertEqual(pln["balance"], "700.00")
+
+    def test_financial_summary_excludes_other_labels_transactions(self):
+        other_label = Label.objects.create(
+            name="Other Records",
+            currency="PLN",
+        )
+
+        Transaction.objects.create(
+            label=self.label,
+            transaction_type="income",
+            amount=Decimal("1000.00"),
+            currency="PLN",
+            date=date(2026, 11, 18),
+        )
+
+        Transaction.objects.create(
+            label=other_label,
+            transaction_type="income",
+            amount=Decimal("9000.00"),
+            currency="PLN",
+            date=date(2026, 11, 18),
+        )
+
+        response = self.client.get(
+            reverse("financial-summary"),
+            {"label": self.label.id},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        pln = response.data["currencies"]["PLN"]
+
+        self.assertEqual(pln["income"], "1000.00")
+        self.assertEqual(pln["expenses"], "0.00")
+        self.assertEqual(pln["balance"], "1000.00")
+
+
+
+    def test_financial_summary_rejects_invalid_dates(self):
+        url = reverse("financial-summary")
+
+        invalid_cases = [
+            {
+                "date_from": "invalid-date",
+            },
+            {
+                "date_to": "2026-13-40",
+            },
+            {
+                "date_from": "2026-11-30",
+                "date_to": "2026-11-01",
+            },
+        ]
+
+        for params in invalid_cases:
+            with self.subTest(params=params):
+                response = self.client.get(
+                    url,
+                    {
+                        "label": self.label.id,
+                        **params,
+                    },
+                )
+
+                self.assertEqual(
+                    response.status_code,
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+
+    def test_transactions_reject_invalid_date(self):
+        response = self.client.get(
+            reverse("transaction-list"),
+            {
+                "label": self.label.id,
+                "date_to": "2026-13-40",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.assertIn("date_to", response.data)
+
+
+class ReleaseSalesSummaryTest(APITestCase):
+
+    def setUp(self):
+        self.user = User.objects.create(username='release_report_user', password='test123')
+        self.label = Label.objects.create(name='Release Test Record', currency='PLN')
+        Membership.objects.create(user=self.user, label=self.label)
+        self.client.force_authenticate(user=self.user)
+
+    def test_release_summary_counts_only_its_sales(self):
+            release_a = Release.objects.create(
+                label=self.label,
+                title="Album A",
+                artist="Artist A",
+                catalog_number="TEST-001",
+            )
+
+            release_b = Release.objects.create(
+                label=self.label,
+                title="Album B",
+                artist="Artist B",
+                catalog_number="TEST-002",
+            )
+
+            format_a = ReleaseFormat.objects.create(
+                release=release_a,
+                format_type="lp",
+                catalog_number="TEST-001-LP",
+                price=Decimal("100.00"),
+                stock_quantity=10,
+            )
+
+            format_b = ReleaseFormat.objects.create(
+                release=release_b,
+                format_type="cd",
+                catalog_number="TEST-002-CD",
+                price=Decimal("50.00"),
+                stock_quantity=10,
+            )
+
+            order = Order.objects.create(
+                label=self.label,
+                order_date=date(2026, 11, 19),
+                status="paid",
+                currency="PLN",
+            )
+
+            OrderItem.objects.create(
+                order=order,
+                release_format=format_a,
+                quantity=2,
+                unit_price=Decimal("100.00"),
+            )
+
+            OrderItem.objects.create(
+                order=order,
+                release_format=format_b,
+                quantity=1,
+                unit_price=Decimal("50.00"),
+            )
+
+            response = self.client.get(
+                reverse(
+                    "release-economics-summary",
+                    kwargs={"release_id": release_a.id},
+                )
+            )
+
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_200_OK,
+            )
+
+            self.assertEqual(
+                response.data["sales"]["PLN"],
+                "200.00",
+            )    
+
+    def test_release_summary_counts_only_eligible_order_statuses(self):
+            release = Release.objects.create(
+                label=self.label,
+                title="Status Test Album",
+                artist="Test Artist",
+                catalog_number="STATUS-001",
+            )
+    
+            release_format = ReleaseFormat.objects.create(
+                release=release,
+                format_type="lp",
+                catalog_number="STATUS-001-LP",
+                price=Decimal("100.00"),
+                stock_quantity=20,
+            )
+    
+            statuses = [
+                ("draft", "100.00"),
+                ("pending", "100.00"),
+                ("paid", "100.00"),
+                ("shipped", "100.00"),
+                ("completed", "100.00"),
+                ("cancelled", "100.00"),
+            ]
+    
+            for order_status, price in statuses:
+                order = Order.objects.create(
+                    label=self.label,
+                    order_date=date(2026, 11, 19),
+                    status=order_status,
+                    currency="PLN",
+                )
+    
+                OrderItem.objects.create(
+                    order=order,
+                    release_format=release_format,
+                    quantity=1,
+                    unit_price=Decimal(price),
+                )
+    
+            response = self.client.get(
+                reverse(
+                    "release-economics-summary",
+                    kwargs={"release_id": release.id},
+                )
+            )
+    
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_200_OK,
+            )
+    
+            self.assertEqual(
+                response.data["sales"]["PLN"],
+                "300.00",
+            )
+
+
+    def test_release_production_costs(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Production Test",
+            artist="Test Artist",
+            catalog_number="PROD-001",
+        )
+
+        ReleaseFormat.objects.create(
+            release=release,
+            format_type="lp",
+            catalog_number="PROD-LP",
+            quantity_produced=300,
+            cost=Decimal("4500.00"),
+            cost_currency="PLN",
+        )
+
+        ReleaseFormat.objects.create(
+            release=release,
+            format_type="cd",
+            catalog_number="PROD-CD",
+            quantity_produced=500,
+            cost=Decimal("2000.00"),
+            cost_currency="PLN",
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["production_costs"]["PLN"],
+            "6500.00",
+        )
+
+        self.assertEqual(
+            response.data["formats"][0]["unit_cost"],
+            "15.00",
+        )
+
+        self.assertEqual(
+            response.data["formats"][1]["unit_cost"],
+            "4.00",
+        )
+
+
+    def test_unit_cost_with_zero_quantity(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Zero Quantity Test",
+            artist="Test Artist",
+            catalog_number="ZERO-001",
+        )
+
+        ReleaseFormat.objects.create(
+            release=release,
+            format_type="lp",
+            catalog_number="ZERO-LP",
+            quantity_produced=0,
+            cost=Decimal("1000.00"),
+            cost_currency="EUR",
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["formats"][0]["unit_cost"],
+            None,
+        )
+
+
+    def test_additional_expenses_exclude_manufacturing(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Expenses Test",
+            artist="Test Artist",
+            catalog_number="EXP-001",
+        )
+
+        expenses = [
+            ("manufacturing", "4500.00"),
+            ("promotion", "1500.00"),
+            ("release", "1000.00"),
+        ]
+
+        for category, amount in expenses:
+            Transaction.objects.create(
+                label=self.label,
+                release=release,
+                transaction_type=TransactionType.EXPENSE,
+                category=category,
+                amount=Decimal(amount),
+                currency="PLN",
+                date=date(2026, 11, 19),
+            )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["additional_expenses"]["PLN"],
+            "2500.00",
+        )
+
+    def test_release_profitability(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Profitability Test",
+            artist="Test Artist",
+            catalog_number="PROFIT-001",
+        )
+
+        release_format = ReleaseFormat.objects.create(
+            release=release,
+            format_type="lp",
+            catalog_number="PROFIT-LP",
+            quantity_produced=100,
+            cost=Decimal("500.00"),
+            cost_currency="PLN",
+        )
+
+        order = Order.objects.create(
+            label=self.label,
+            order_date=date(2026, 11, 19),
+            status="paid",
+            currency="PLN",
+        )
+
+        OrderItem.objects.create(
+            order=order,
+            release_format=release_format,
+            quantity=10,
+            unit_price=Decimal("100.00"),
+        )
+
+        Transaction.objects.create(
+            label=self.label,
+            release=release,
+            transaction_type=TransactionType.EXPENSE,
+            category="promotion",
+            amount=Decimal("300.00"),
+            currency="PLN",
+            date=date(2026, 11, 19),
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        result = response.data["profitability"]["PLN"]
+
+        self.assertEqual(result["revenue"], "1000.00")
+        self.assertEqual(result["total_costs"], "800.00")
+        self.assertEqual(result["profit"], "200.00")
+        self.assertEqual(result["roi"], "25.00")
+
+
+    def test_release_profitability_without_costs(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="No Costs Test",
+            artist="Test Artist",
+            catalog_number="NOCOST-001",
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["profitability"], {})

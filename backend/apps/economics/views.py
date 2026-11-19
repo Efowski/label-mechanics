@@ -1,6 +1,10 @@
-from django.db.models import Sum
+from django.db.models import Sum, F, DecimalField, ExpressionWrapper
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
+
+from decimal import Decimal
+
+
 
 from rest_framework import viewsets
 from rest_framework.views import APIView
@@ -9,9 +13,26 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 
-from .models import Transaction
+from .models import Transaction, TransactionType, TransactionCategory
 from .serializer import TransactionSerializer
-from apps.core.models import Membership, Release
+from apps.core.models import Membership, Release, OrderItem, OrderStatus
+
+
+def parse_report_date(value, field_name):
+    if not value:
+        return None
+
+    try:
+        parsed = parse_date(value)
+    except ValueError:
+        parsed = None
+
+    if parsed is None:
+        raise ValidationError({
+            field_name: "Invalid date format. Use YYYY-MM-DD."
+        })
+
+    return parsed
 
 
 class TransactionViewSet(viewsets.ModelViewSet):
@@ -31,28 +52,13 @@ class TransactionViewSet(viewsets.ModelViewSet):
         date_to = self.request.query_params.get("date_to")
 
         # validation date
-
-        if date_from:
-            date_from = parse_date(date_from)
-            if date_from is None:
-                raise ValidationError(
-                    {
-                        "date_from": "Invalid date format. Use YYYY-MM-DD."
-                     }
-                )
-        
-
-        if date_to:
-            date_to = parse_date(date_to)
-            if date_to is None:
-                raise ValidationError({
-                    "date_to": "Invalid date format. Use YYYY-MM-DD."
-                })
+        date_from = parse_report_date(date_from, "date_from")
+        date_to = parse_report_date(date_to, "date_to")
 
         if date_from and date_to and date_from > date_to:
             raise ValidationError({
                 "date": "date_from cannot be later than date_to."
-            })    
+            })
 
 
         if label:
@@ -121,10 +127,220 @@ class ReleaseEconomicsSummaryView(APIView):
 
         balance = income - expense
 
+        sales_queryset = (
+            OrderItem.objects
+            .filter(
+                release_format__release=release,
+                order__label=release.label,
+                order__status__in=[
+                    OrderStatus.PAID,
+                    OrderStatus.SHIPPED,
+                    OrderStatus.COMPLETED,
+                ],
+            )
+            .annotate(
+                line_total=ExpressionWrapper(
+                    F("quantity") * F("unit_price"),
+                    output_field=DecimalField(
+                        max_digits=14,
+                        decimal_places=2,
+                    ),
+                )
+            )
+            .values("order__currency")
+            .annotate(total=Sum("line_total"))
+        )
+
+        sales = {
+            row["order__currency"]: f'{row["total"]:.2f}'
+            for row in sales_queryset
+        }
+
+        production_costs = {}
+        formats_data = []
+
+        for release_format in release.formats.all():
+            currency = release_format.cost_currency
+            cost = release_format.cost
+
+            production_costs[currency] = (
+                production_costs.get(currency, Decimal("0.00")) + cost
+            )
+
+            quantity = release_format.quantity_produced
+
+            unit_cost = (
+                cost / quantity
+                if quantity > 0
+                else None
+            )
+
+            formats_data.append({
+                "format_id": release_format.id,
+                "quantity_produced": quantity,
+                "production_cost": f"{cost:.2f}",
+                "currency": currency,
+                "unit_cost": (
+                    f"{unit_cost:.2f}"
+                    if unit_cost is not None
+                    else None
+                ),
+            })
+
+        production_costs = {
+            currency: f"{amount:.2f}"
+            for currency, amount in production_costs.items()
+        }
+
+        additional_expenses_queryset = (
+            Transaction.objects
+            .filter(
+                label=release.label,
+                release=release,
+                transaction_type=TransactionType.EXPENSE,
+            )
+            .exclude(
+                category=TransactionCategory.MANUFACTURING
+            )
+            .values("currency")
+            .annotate(total=Sum("amount"))
+        )
+
+        additional_expenses = {
+            row["currency"]: f'{row["total"]:.2f}'
+            for row in additional_expenses_queryset
+        }
+
+        currencies = (
+            set(sales)
+            | set(production_costs)
+            | set(additional_expenses)
+        )
+
+        profitability = {}
+
+        for currency in sorted(currencies):
+            revenue = Decimal(sales.get(currency, "0.00"))
+
+            production = Decimal(
+                production_costs.get(currency, "0.00")
+            )
+
+            additional = Decimal(
+                additional_expenses.get(currency, "0.00")
+            )
+
+            total_cost = production + additional
+            profit = revenue - total_cost
+
+            roi = (
+                (profit / total_cost) * Decimal("100")
+                if total_cost > 0
+                else None
+            )
+
+            profitability[currency] = {
+                "revenue": f"{revenue:.2f}",
+                "total_costs": f"{total_cost:.2f}",
+                "profit": f"{profit:.2f}",
+                "roi": f"{roi:.2f}" if roi is not None else None,
+            }
+
         return Response({
             'release': release.id,
             'title': release.title,
             'income': income, 
             'expense': expense,
             'balance': balance,
+            'sales': sales,
+            "production_costs": production_costs,
+            "formats": formats_data,
+            'additional_expenses': additional_expenses, 
+            "profitability": profitability,
         })
+
+    
+
+
+
+class FinancialSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        label_id = request.query_params.get("label")
+
+        if not label_id:
+            raise ValidationError({
+                "label": "Label parameter is required."
+            })
+
+        if not Membership.objects.filter(
+            user=request.user,
+            label_id=label_id,
+        ).exists():
+            return Response(
+                {"detail": "You do not have access to this label."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+
+        date_from = parse_report_date(date_from, "date_from")
+        date_to = parse_report_date(date_to, "date_to")
+
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({
+                "date": "date_from cannot be later than date_to."
+            })
+
+        transactions = Transaction.objects.filter(label_id=label_id)
+
+        if date_from:
+            transactions = transactions.filter(date__gte=date_from)
+
+        if date_to:
+            transactions = transactions.filter(date__lte=date_to)
+
+        totals = (transactions
+            .values("currency", "transaction_type")
+            .annotate(total=Sum("amount"))
+            .order_by("currency", "transaction_type")
+        )
+
+        currencies = {}
+
+        for row in totals:
+            currency = row["currency"]
+
+            if currency not in currencies:
+                currencies[currency] = {
+                    "income": Decimal("0.00"),
+                    "expenses": Decimal("0.00"),
+                    "balance": Decimal("0.00"),
+                }
+
+            if row["transaction_type"] == "income":
+                currencies[currency]["income"] = row["total"]
+
+            elif row["transaction_type"] == "expense":
+                currencies[currency]["expenses"] = row["total"]
+
+        for values in currencies.values():
+            values["balance"] = (
+                values["income"] - values["expenses"]
+            )
+
+        return Response({
+            "label": int(label_id),
+            "currencies": {
+                currency: {
+                    key: f"{value:.2f}"
+                    for key, value in values.items()
+                }
+                for currency, values in currencies.items()
+            },
+        })
+
+
+    
