@@ -6,7 +6,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.core.models import User, Label, Membership, Release, Order, ReleaseFormat, OrderItem
+from apps.core.models import User, Label, Membership, Release, Order, ReleaseFormat, OrderItem, OrderStatus
 from apps.campaigns.models import Campaign, CampaignMetric, Coverage
 from .models import Transaction, TransactionType
 
@@ -1114,3 +1114,149 @@ class ReleaseSalesSummaryTest(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["profitability"], {})
+
+
+    def test_other_income_excludes_order_transactions(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Other Income Test",
+            artist="Test Artist",
+            catalog_number="OTHER-001",
+        )
+
+        release_format = ReleaseFormat.objects.create(
+            release=release,
+            format_type="lp",
+            catalog_number="OTHER-LP",
+        )
+
+        order = Order.objects.create(
+            label=self.label,
+            order_date=date(2026, 11, 19),
+            status=OrderStatus.PAID,
+            currency="PLN",
+        )
+
+        OrderItem.objects.create(
+            order=order,
+            release_format=release_format,
+            quantity=2,
+            unit_price=Decimal("100.00"),
+        )
+
+        Transaction.objects.create(
+            label=self.label,
+            release=release,
+            order=order,
+            transaction_type=TransactionType.INCOME,
+            category="sales",
+            amount=Decimal("200.00"),
+            currency="PLN",
+            date=date(2026, 11, 19),
+        )
+
+        Transaction.objects.create(
+            label=self.label,
+            release=release,
+            transaction_type=TransactionType.INCOME,
+            category="other",
+            amount=Decimal("50.00"),
+            currency="PLN",
+            date=date(2026, 11, 19),
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["other_income"]["PLN"], "50.00")
+        self.assertEqual(
+            response.data["profitability"]["PLN"]["revenue"],
+            "250.00",
+        )
+
+
+    def test_profitability_separates_currencies(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Currency Test",
+            artist="Test Artist",
+            catalog_number="CUR-001",
+        )
+
+        for currency, amount in [
+            ("PLN", "100.00"),
+            ("EUR", "50.00"),
+        ]:
+            Transaction.objects.create(
+                label=self.label,
+                release=release,
+                transaction_type=TransactionType.INCOME,
+                category="other",
+                amount=Decimal(amount),
+                currency=currency,
+                date=date(2026, 11, 19),
+            )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        profitability = response.data["profitability"]
+
+        self.assertEqual(profitability["PLN"]["revenue"], "100.00")
+        self.assertEqual(profitability["EUR"]["revenue"], "50.00")
+        self.assertIsNone(profitability["PLN"]["roi"])
+        self.assertIsNone(profitability["EUR"]["roi"])
+
+        self.assertEqual(
+            response.data["transactions"]["PLN"]["income"],
+            "100.00",
+        )
+        self.assertEqual(
+            response.data["transactions"]["EUR"]["income"],
+            "50.00",
+        )    
+
+
+    def test_release_summary_excludes_other_label_transactions(self):
+        release = Release.objects.create(
+            label=self.label,
+            title="Isolation Test",
+            artist="Test Artist",
+            catalog_number="ISO-001",
+        )
+
+        other_label = Label.objects.create(
+            name="Other Label",
+            currency="PLN",
+        )
+
+        Transaction.objects.create(
+            label=other_label,
+            release=release,
+            transaction_type=TransactionType.INCOME,
+            amount=Decimal("999.00"),
+            currency="PLN",
+            date=date(2026, 11, 19),
+        )
+
+        response = self.client.get(
+            reverse(
+                "release-economics-summary",
+                kwargs={"release_id": release.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["other_income"], {})
+        self.assertEqual(response.data["transactions"], {})

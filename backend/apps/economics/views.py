@@ -118,14 +118,44 @@ class ReleaseEconomicsSummaryView(APIView):
 
     def get(self, request, release_id):
         release = get_object_or_404(Release.objects.filter(label__memberships__user=request.user), id=release_id)
-        transactions = Transaction.objects.filter( release=release)
-        income = transactions.filter(transaction_type='income').aggregate(total=Sum('amount'))['total']
-        expense = transactions.filter(transaction_type='expense').aggregate(total=Sum('amount'))['total']
+        transactions = Transaction.objects.filter(
+            label=release.label,
+            release=release,
+        )
 
-        income = income or 0
-        expense = expense or 0
+        transaction_totals = (
+            transactions
+            .values("currency", "transaction_type")
+            .annotate(total=Sum("amount"))
+        )
 
-        balance = income - expense
+        transaction_summary = {}
+
+        for row in transaction_totals:
+            currency = row["currency"]
+
+            if currency not in transaction_summary:
+                transaction_summary[currency] = {
+                    "income": Decimal("0.00"),
+                    "expenses": Decimal("0.00"),
+                }
+
+            if row["transaction_type"] == TransactionType.INCOME:
+                transaction_summary[currency]["income"] = row["total"]
+
+            elif row["transaction_type"] == TransactionType.EXPENSE:
+                transaction_summary[currency]["expenses"] = row["total"]
+
+        for values in transaction_summary.values():
+            values["balance"] = values["income"] - values["expenses"]
+
+        transaction_summary = {
+            currency: {
+                key: f"{value:.2f}"
+                for key, value in values.items()
+            }
+            for currency, values in transaction_summary.items()
+        }
 
         sales_queryset = (
             OrderItem.objects
@@ -211,16 +241,36 @@ class ReleaseEconomicsSummaryView(APIView):
             for row in additional_expenses_queryset
         }
 
+        other_income_queryset = (
+        transactions
+        .filter(
+            transaction_type=TransactionType.INCOME,
+            order__isnull=True,
+        )
+        .values("currency")
+        .annotate(total=Sum("amount"))
+    )
+
+        other_income = {
+            row["currency"]: f'{row["total"]:.2f}'
+            for row in other_income_queryset
+        }
+
+
         currencies = (
             set(sales)
             | set(production_costs)
             | set(additional_expenses)
+            | set(other_income)
         )
 
         profitability = {}
 
         for currency in sorted(currencies):
-            revenue = Decimal(sales.get(currency, "0.00"))
+            sales_revenue = Decimal(sales.get(currency, "0.00"))
+            other_revenue = Decimal(other_income.get(currency, "0.00"))
+
+            revenue = sales_revenue + other_revenue
 
             production = Decimal(
                 production_costs.get(currency, "0.00")
@@ -247,15 +297,14 @@ class ReleaseEconomicsSummaryView(APIView):
             }
 
         return Response({
-            'release': release.id,
-            'title': release.title,
-            'income': income, 
-            'expense': expense,
-            'balance': balance,
-            'sales': sales,
+            "release": release.id,
+            "title": release.title,
+            "transactions": transaction_summary,
+            "sales": sales,
+            "other_income": other_income,
             "production_costs": production_costs,
             "formats": formats_data,
-            'additional_expenses': additional_expenses, 
+            "additional_expenses": additional_expenses,
             "profitability": profitability,
         })
 
